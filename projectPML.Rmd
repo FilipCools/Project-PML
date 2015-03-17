@@ -1,0 +1,199 @@
+---
+title: "Project PML"
+author: "Filip Cools"
+date: "Tuesday, March 17, 2015"
+output: pdf_document
+---
+# Background 
+
+(copy-paste from project assignment)
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+# Project
+
+During the whole project, we use the package Caret in R. 
+
+```{r,warning=FALSE,results='hide',message=FALSE,cache=TRUE}
+library(caret)
+```
+
+The training data for this project are available here: 
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv .
+The test data are available here: 
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv .
+
+In the code below, we assume that the training and testing have been downloaded in the working directory for R. 
+
+```{r,warning=FALSE,results='hide',message=FALSE,cache=TRUE}
+training<-read.csv("pml-training.csv",na.strings=c("","NA"))
+testing<-read.csv("pml-testing.csv")
+```
+
+The ways in which the barbell lifts were performed correspond to the variable `classe` of the training data frame. 
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+unique(training$classe)
+```
+
+### Analysis/selection of the predictor variables
+
+We take a look at the predictor variables in the training data frame. First, we compute the percentage of NA values for each variable. 
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+nr<-nrow(training)
+nc<-ncol(training)
+NAnumbers<-numeric(nc)
+for (i in 1:nc) {NAnumbers[i]<-sum(is.na(training[,i]))}
+NApercentage<-NAnumbers/nr
+table(NApercentage)
+var_noNAvalues<-which(NAnumbers==0)
+```
+
+Apparently, there are `100` variables for which there are a lot of NA values in the training data set. We are only going to work with the other variables. Their indices are in the `var_noNAvalues` vector. In the code below, we split up the remaining variables by class type.
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+cv<-NA; for (i in 1:length(var_noNAvalues)){cv[i]<-class(training[,var_noNAvalues[i]])}; table(cv)
+```
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+facvar_noNAvalues<-var_noNAvalues[which(cv=="factor")] 
+facvar_noNAvalues
+head(training[,facvar_noNAvalues],n=2)
+unique(training[,2])
+table(training$new_window)
+```
+
+The factor variable `user_name` gives us the name of the test person. The factor variable `cvtd_timestamp` contains the precise time when the lift was done. This should not give us information on the `classe` variable, so we will disregard it below. Also, the variable `new_window` doesn't seem to be interesting. So, the only factor variable that we will use as a predictor variable is `user_name` . 
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+intvar_noNAvalues<-var_noNAvalues[which(cv=="integer")] 
+head(training[,intvar_noNAvalues],n=2) 
+```
+
+Among the predictor variables of integer type, we will disregard the variables `X` (row index), `raw_timestamp_part_1` and `raw_timestamp_part_2` (time related).
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+numvar_noNAvalues<-var_noNAvalues[which(cv=="numeric")] 
+head(training[,numvar_noNAvalues],n=2)
+```
+
+Since we are going to use all the remaining numeric type predictor variables, the variables we end up with are the ones in the vector `variables`. The `classe` variable is in column `cc`. 
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+variables <- sort(as.integer(c(intvar_noNAvalues[4:length(intvar_noNAvalues)],numvar_noNAvalues,2,160)))
+training<-training[,variables]
+testing<-testing[,variables]
+dim(training)
+dim(testing)
+cc<-ncol(training)
+```
+
+Using the `dummyVars` function of the Caret package, we can make dummy variables for all the factor variables (so for the variable `user_name`). 
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+dum_train<-dummyVars(~.,training[,-cc])
+dum_test<-dummyVars(~.,testing[,-cc])
+training<-data.frame(predict(dum_train,training)[,-1],classe=training$classe)
+testing<-data.frame(predict(dum_test,testing)[,-1],problem_id=testing$problem_id)
+dim(training)
+dim(testing)
+```
+
+We can remove one of the columns corresponding to a dummy variable (here the first column), since it is dependent from the other columns (the sum of the columns is the column with only ones). 
+
+### Creation of validation data set
+
+Using the function `createDataPartition`, we subdivide the training set in two sets: a training set `training_tr` and a validation set `training_val`. 
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+set.seed(1234)
+sub<-createDataPartition(y=training$classe,p=0.75,list=FALSE)
+training_tr<-training[sub,]
+training_val<-training[-sub,]
+dim(training_tr)
+dim(training_val)
+cc<-ncol(training_tr)
+```
+
+The `classe` variable is in column `cc`. 
+
+### Cross validation
+
+We will use 3-fold cross validation with 5 repetitions in the models below. 
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+set.seed(1235)
+MyTrainControl<-trainControl(method="repeatedcv",number=3,repeats=5)
+```
+
+Now we will start with defining some models for predicting the class variable from the predictor variables. We use the `train` function of the Caret package on the training set `training_tr` for this. After we have computed the model, we can check the accuracy on the `training_val` data set. At the end, we pick the model giving us the highest accuracy. 
+
+### Model 1 : Linear discriminant analysis with principal component analysis
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+preProc<-preProcess(training_tr[,-cc],method="pca",pcaComp=20)
+trainingPCA<-cbind(predict(preProc,training_tr[,-cc]),classe=training_tr$classe)
+model1<-train(classe~.,method="lda",data=trainingPCA,trControl=MyTrainControl)
+valPCA<-predict(preProc,training_val[,-cc])
+pred_valPCA<-predict(model1,valPCA)
+confusionMatrix(training_val$classe,pred_valPCA)$overall
+```
+
+### Model 2 : Linear discriminant analysis
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+model2<-train(classe~.,method="lda",data=training_tr,trControl=MyTrainControl)
+pred_val<-predict(model2,training_val)
+confusionMatrix(training_val$classe,pred_val)$overall
+```
+
+### Model 3: Quadratic discriminant analysis with principal component analysis
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+preProc<-preProcess(training_tr[,-cc],method="pca",pcaComp=20)
+trainingPCA<-cbind(predict(preProc,training_tr[,-cc]),classe=training_tr$classe)
+model3<-train(classe~.,method="qda",data=trainingPCA,trControl=MyTrainControl)
+valPCA<-predict(preProc,training_val[,-cc])
+pred_valPCA<-predict(model3,valPCA)
+confusionMatrix(training_val$classe,pred_valPCA)$overall
+```
+
+### Model 4: Random forest with principal component analysis
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+preProc<-preProcess(training_tr[,-cc],method="pca",pcaComp=20)
+trainingPCA<-cbind(predict(preProc,training_tr[,-cc]),classe=training_tr$classe)
+model4<-train(classe~.,method="rf",data=trainingPCA,ntree=100,trControl=MyTrainControl)
+valPCA<-predict(preProc,training_val[,-cc])
+pred_valPCA<-predict(model4,valPCA)
+confusionMatrix(training_val$classe,pred_valPCA)$overall
+```
+
+### Model 5: Random forest (10 trees)
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+model5<-train(classe~.,method="rf",data=training_tr,verbose=FALSE,ntree=10,trControl=MyTrainControl)
+pred_val<-predict(model5,training_val)
+confusionMatrix(training_val$classe,pred_val)$overall
+```
+
+### Model 6: Random forest (100 trees)
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+model6<-train(classe~.,method="rf",data=training_tr,verbose=FALSE,ntree=100,trControl=MyTrainControl)
+pred_val<-predict(model6,training_val)
+confusionMatrix(training_val$classe,pred_val)$overall
+```
+
+### Model selection
+
+Model 6 is the best model that we have tried. 
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+confusionMatrix(training_val$classe,pred_val)
+```
+
+# Summary 
+
+First we checked which variables are interesting to use as predictor variables for the outcome `classe`. Then we computed the accuracies of some models using cross validation (3-fold with 5 repeats). The random forest model on 100 trees performs best. Its accuracy is `0.999` with a 95% confidence interval of `(0.9976,0.9997)`. In fact, to compute the out of sample error, we should use another data set than the validation set, since we used the validation set for model selection, but the accuracy will be similar. 
